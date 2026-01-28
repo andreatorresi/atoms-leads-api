@@ -5,7 +5,11 @@ import { createClient } from "@supabase/supabase-js";
 const app = express();
 
 // ---- Config ----
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT) || 8080;
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log("API listening on port", PORT);
+});
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN; // es. https://tuodominio.it (NO slash finale)
@@ -113,3 +117,4 @@ app.post("/api/lead", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`API listening on port ${PORT}`);
 });
+
