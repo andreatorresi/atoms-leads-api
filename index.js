@@ -4,12 +4,12 @@ import { createClient } from "@supabase/supabase-js";
 
 const app = express();
 
-// ---- Config / Env ----
+// -------------------- CONFIG --------------------
 const PORT = Number(process.env.PORT) || 8080;
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN; // es. https://atoms.dev oppure https://tuodominio.it
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN; // es. https://q7cfks.pub.atoms.dev
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
   console.error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY env vars");
@@ -20,29 +20,37 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false }
 });
 
-// ---- Middleware ----
+const ALLOWED_ROLES = ["Titolare", "Direttore", "Farmacista", "Altro"];
+const ALLOWED_REVENUES = [
+  "Meno di €500.000",
+  "€500.000 - €1.000.000",
+  "€1.000.000 - €2.000.000",
+  "Oltre €2.000.000"
+];
+
+// -------------------- MIDDLEWARE --------------------
 app.use(express.json({ limit: "300kb" }));
 app.use(express.urlencoded({ extended: true }));
 
 app.use(
   cors({
     origin: (origin, cb) => {
-      // Permetti richieste senza Origin (curl, server-to-server)
+      // Permetti chiamate senza Origin (curl, server-to-server)
       if (!origin) return cb(null, true);
 
-      // Se ALLOWED_ORIGIN non è impostato, non bloccare (debug).
-      // In produzione: imposta ALLOWED_ORIGIN e fai bloccare il resto.
+      // Se non è impostato ALLOWED_ORIGIN, non bloccare (debug).
+      // In produzione, impostalo sempre.
       if (!ALLOWED_ORIGIN) return cb(null, true);
 
       if (origin === ALLOWED_ORIGIN) return cb(null, true);
       return cb(new Error(`CORS blocked for origin: ${origin}`), false);
     },
-    methods: ["GET", "POST", "OPTIONS"],
+    methods: ["POST", "OPTIONS", "GET"],
     allowedHeaders: ["Content-Type"]
   })
 );
 
-// ---- Utils ----
+// -------------------- UTILS --------------------
 function isValidEmail(email) {
   if (typeof email !== "string") return false;
   const e = email.trim().toLowerCase();
@@ -50,11 +58,12 @@ function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
 }
 
-function cleanStr(v, maxLen) {
-  if (v === null || v === undefined) return null;
-  const s = String(v).trim();
-  if (!s) return null;
-  return s.slice(0, maxLen);
+function assertStringField(name, v, min, max) {
+  if (typeof v !== "string") return `${name} deve essere una stringa`;
+  const s = v.trim();
+  if (s.length < min) return `${name} deve essere almeno ${min} caratteri`;
+  if (s.length > max) return `${name} deve essere massimo ${max} caratteri`;
+  return null;
 }
 
 function toBoolean(v) {
@@ -68,11 +77,25 @@ function toBoolean(v) {
   return false;
 }
 
-// ---- Routes ----
+// -------------------- ROUTES --------------------
 app.get("/health", (req, res) => {
   res.status(200).json({ ok: true });
 });
 
+/**
+ * Payload JSON inviato da Atoms:
+ * {
+ *  "firstName": "Mario",
+ *  "lastName": "Rossi",
+ *  "email": "mario.rossi@farmacia.it",
+ *  "phone": "0733881000",
+ *  "pharmacyName": "Farmacia Comunale",
+ *  "role": "Titolare",
+ *  "revenue": "€500.000 - €1.000.000",
+ *  "challenge": "Difficoltà nella gestione delle scorte e margini bassi",
+ *  "privacy": true
+ * }
+ */
 app.post("/api/lead", async (req, res) => {
   try {
     const {
@@ -87,42 +110,61 @@ app.post("/api/lead", async (req, res) => {
       privacy
     } = req.body || {};
 
-    if (!isValidEmail(email)) {
-      return res.status(400).json({ success: false, error: "Email non valida" });
+    // ---- VALIDAZIONI (Atoms) ----
+    const err =
+      assertStringField("firstName", firstName, 2, 100) ||
+      assertStringField("lastName", lastName, 2, 100) ||
+      (isValidEmail(email) ? null : "Email non valida") ||
+      assertStringField("phone", phone, 6, 20) ||
+      assertStringField("pharmacyName", pharmacyName, 3, 255) ||
+      assertStringField("challenge", challenge, 10, 2000);
+
+    if (err) return res.status(400).json({ success: false, error: err });
+
+    if (!ALLOWED_ROLES.includes(role)) {
+      return res.status(400).json({ success: false, error: "Ruolo non valido" });
+    }
+
+    if (!ALLOWED_REVENUES.includes(revenue)) {
+      return res.status(400).json({ success: false, error: "Fatturato non valido" });
     }
 
     if (toBoolean(privacy) !== true) {
-      return res.status(400).json({ success: false, error: "Privacy richiesta" });
+      return res.status(400).json({ success: false, error: "Privacy deve essere accettata" });
     }
 
-    const payload = {
-      first_name: cleanStr(firstName, 150),
-      last_name: cleanStr(lastName, 150),
+    // ---- DB MAPPING (Supabase) ----
+    // Richiede colonne:
+    // first_name, last_name, email, phone, pharmacy_name, role,
+    // annual_revenue, main_challenge, privacy_accepted
+    const row = {
+      first_name: firstName.trim(),
+      last_name: lastName.trim(),
       email: email.trim().toLowerCase(),
-      phone: cleanStr(phone, 50),
-      pharmacy_name: cleanStr(pharmacyName, 200),
-      role: cleanStr(role, 100),
-      revenue: cleanStr(revenue, 100),
-      challenge: cleanStr(challenge, 5000),
-      privacy: true,
-      fonte: "atoms"
+      phone: phone.trim(),
+      pharmacy_name: pharmacyName.trim(),
+      role,
+      annual_revenue: revenue,
+      main_challenge: challenge.trim(),
+      privacy_accepted: true
     };
 
-    const { error } = await supabase.from("leads").insert(payload);
+    // Upsert su email (serve vincolo UNIQUE su leads.email)
+    const { error } = await supabase.from("leads").upsert(row, { onConflict: "email" });
 
     if (error) {
-      console.error("Supabase insert error:", error);
+      console.error("Supabase upsert error:", error);
       return res.status(500).json({ success: false, error: "Errore salvataggio lead" });
     }
 
     return res.status(200).json({ success: true, message: "Lead ricevuto" });
-  } catch (err) {
-    console.error("Unhandled error:", err);
+  } catch (e) {
+    console.error("Unhandled error:", e);
     return res.status(500).json({ success: false, error: "Errore server" });
   }
 });
 
-// ---- Start (UNO SOLO) ----
+// -------------------- START --------------------
 const server = app.listen(PORT, "0.0.0.0", () => {
   console.log("API listening on port", PORT);
 });
