@@ -4,52 +4,45 @@ import { createClient } from "@supabase/supabase-js";
 
 const app = express();
 
-// ---- Config ----
+// ---- Config / Env ----
 const PORT = Number(process.env.PORT) || 8080;
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log("API listening on port", PORT);
-});
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN; // es. https://tuodominio.it (NO slash finale)
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN; // es. https://atoms.dev oppure https://tuodominio.it
 
-// Basic hard-check
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
   console.error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY env vars");
   process.exit(1);
 }
 
-// Supabase client (SERVER-SIDE ONLY)
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false }
 });
 
-// Middleware
-app.use(express.json({ limit: "200kb" }));
+// ---- Middleware ----
+app.use(express.json({ limit: "300kb" }));
+app.use(express.urlencoded({ extended: true }));
 
 app.use(
   cors({
     origin: (origin, cb) => {
-      // Permette chiamate server-to-server o tool test senza Origin
+      // Permetti richieste senza Origin (curl, server-to-server)
       if (!origin) return cb(null, true);
 
-      // Permette solo l'origine attesa (Atoms live)
-      if (ALLOWED_ORIGIN && origin === ALLOWED_ORIGIN) return cb(null, true);
+      // Se ALLOWED_ORIGIN non è impostato, non bloccare (debug).
+      // In produzione: imposta ALLOWED_ORIGIN e fai bloccare il resto.
+      if (!ALLOWED_ORIGIN) return cb(null, true);
 
+      if (origin === ALLOWED_ORIGIN) return cb(null, true);
       return cb(new Error(`CORS blocked for origin: ${origin}`), false);
     },
-    methods: ["POST", "OPTIONS"],
+    methods: ["GET", "POST", "OPTIONS"],
     allowedHeaders: ["Content-Type"]
   })
 );
 
-// Healthcheck (utile per debug)
-app.get("/health", (req, res) => {
-  res.status(200).json({ ok: true });
-});
-
-// Helper: email validation (minima, robusta)
+// ---- Utils ----
 function isValidEmail(email) {
   if (typeof email !== "string") return false;
   const e = email.trim().toLowerCase();
@@ -57,49 +50,64 @@ function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
 }
 
-// Endpoint: riceve lead
+function cleanStr(v, maxLen) {
+  if (v === null || v === undefined) return null;
+  const s = String(v).trim();
+  if (!s) return null;
+  return s.slice(0, maxLen);
+}
+
+function toBoolean(v) {
+  if (v === true) return true;
+  if (v === false) return false;
+  if (typeof v === "string") {
+    const x = v.trim().toLowerCase();
+    return x === "true" || x === "1" || x === "on" || x === "yes";
+  }
+  if (typeof v === "number") return v === 1;
+  return false;
+}
+
+// ---- Routes ----
+app.get("/health", (req, res) => {
+  res.status(200).json({ ok: true });
+});
+
 app.post("/api/lead", async (req, res) => {
   try {
     const {
-      nome,
+      firstName,
+      lastName,
       email,
-      telefono,
-      messaggio,
-      consenso_privacy,
-      utm_source,
-      utm_medium,
-      utm_campaign,
-      fonte,
-      // honeypot anti-spam (campo invisibile nel form)
-      company
+      phone,
+      pharmacyName,
+      role,
+      revenue,
+      challenge,
+      privacy
     } = req.body || {};
 
-    // Anti-spam (honeypot): se compilato, droppa in modo “silenzioso”
-    if (company && String(company).trim() !== "") {
-      return res.status(200).json({ success: true });
-    }
-
-    // Validazioni minime
     if (!isValidEmail(email)) {
       return res.status(400).json({ success: false, error: "Email non valida" });
     }
-    if (consenso_privacy !== true) {
-      return res.status(400).json({ success: false, error: "Consenso privacy richiesto" });
+
+    if (toBoolean(privacy) !== true) {
+      return res.status(400).json({ success: false, error: "Privacy richiesta" });
     }
 
     const payload = {
-      nome: (nome || "").toString().trim().slice(0, 200),
+      first_name: cleanStr(firstName, 150),
+      last_name: cleanStr(lastName, 150),
       email: email.trim().toLowerCase(),
-      telefono: (telefono || "").toString().trim().slice(0, 50) || null,
-      messaggio: (messaggio || "").toString().trim().slice(0, 5000) || null,
-      consenso_privacy: true,
-      fonte: (fonte || "atoms").toString().trim().slice(0, 50),
-      utm_source: (utm_source || "").toString().trim().slice(0, 150) || null,
-      utm_medium: (utm_medium || "").toString().trim().slice(0, 150) || null,
-      utm_campaign: (utm_campaign || "").toString().trim().slice(0, 150) || null
+      phone: cleanStr(phone, 50),
+      pharmacy_name: cleanStr(pharmacyName, 200),
+      role: cleanStr(role, 100),
+      revenue: cleanStr(revenue, 100),
+      challenge: cleanStr(challenge, 5000),
+      privacy: true,
+      fonte: "atoms"
     };
 
-    // Insert su Supabase
     const { error } = await supabase.from("leads").insert(payload);
 
     if (error) {
@@ -107,14 +115,19 @@ app.post("/api/lead", async (req, res) => {
       return res.status(500).json({ success: false, error: "Errore salvataggio lead" });
     }
 
-    return res.status(200).json({ success: true });
+    return res.status(200).json({ success: true, message: "Lead ricevuto" });
   } catch (err) {
     console.error("Unhandled error:", err);
     return res.status(500).json({ success: false, error: "Errore server" });
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`API listening on port ${PORT}`);
+// ---- Start (UNO SOLO) ----
+const server = app.listen(PORT, "0.0.0.0", () => {
+  console.log("API listening on port", PORT);
 });
 
+server.on("error", (err) => {
+  console.error("Server listen error:", err);
+  process.exit(1);
+});
