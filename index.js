@@ -137,17 +137,24 @@ app.post("/api/lead", async (req, res) => {
     // Usiamo colonne Atoms-native già presenti in public.leads:
     // first_name, last_name, email, phone, pharmacy_name, role, revenue, challenge, privacy, fonte
     const row = {
-      first_name: firstName.trim(),
-      last_name: lastName.trim(),
-      email: email.trim().toLowerCase(),
-      phone: phone.trim(),
-      pharmacy_name: pharmacyName.trim(),
-      role,
-      revenue,
-      challenge: challenge.trim(),
-      privacy: true,
-      fonte: "atoms"
-    };
+  // colonne legacy NOT NULL
+  nome: `${firstName.trim()} ${lastName.trim()}`,
+  telefono: phone.trim(),
+  messaggio: challenge.trim(),
+  consenso_privacy: true,
+
+  // colonne nuove / atoms
+  first_name: firstName.trim(),
+  last_name: lastName.trim(),
+  email: email.trim().toLowerCase(),
+  phone: phone.trim(),
+  pharmacy_name: pharmacyName.trim(),
+  role,
+  revenue,
+  challenge: challenge.trim(),
+  privacy: true,
+  fonte: "atoms"
+};
 
     // Upsert su email (vincolo UNIQUE su leads.email già presente)
     const { error } = await supabase.from("leads").upsert(row, { onConflict: "email" });
@@ -173,3 +180,4 @@ server.on("error", (err) => {
   console.error("Server listen error:", err);
   process.exit(1);
 });
+
