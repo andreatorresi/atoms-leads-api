@@ -134,9 +134,8 @@ app.post("/api/lead", async (req, res) => {
     }
 
     // ---- DB MAPPING (Supabase) ----
-    // Richiede colonne:
-    // first_name, last_name, email, phone, pharmacy_name, role,
-    // annual_revenue, main_challenge, privacy_accepted
+    // Usiamo colonne Atoms-native già presenti in public.leads:
+    // first_name, last_name, email, phone, pharmacy_name, role, revenue, challenge, privacy, fonte
     const row = {
       first_name: firstName.trim(),
       last_name: lastName.trim(),
@@ -144,12 +143,13 @@ app.post("/api/lead", async (req, res) => {
       phone: phone.trim(),
       pharmacy_name: pharmacyName.trim(),
       role,
-      annual_revenue: revenue,
-      main_challenge: challenge.trim(),
-      privacy_accepted: true
+      revenue,
+      challenge: challenge.trim(),
+      privacy: true,
+      fonte: "atoms"
     };
 
-    // Upsert su email (serve vincolo UNIQUE su leads.email)
+    // Upsert su email (vincolo UNIQUE su leads.email già presente)
     const { error } = await supabase.from("leads").upsert(row, { onConflict: "email" });
 
     if (error) {
